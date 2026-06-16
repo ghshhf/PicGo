@@ -1,0 +1,31 @@
+{
+  "name": "picgo-upload-layer",
+  "version": "0.1.0",
+  "description": "基于 libc 架构理念重构的 PicGo 上传图层：统一上下文 + 声明式接口 + 6步标准流水线 + 独立图床模块",
+  "private": true,
+  "type": "module",
+  "main": "dist/upload/index.js",
+  "types": "dist/upload/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --project tsconfig.json --watch",
+    "test": "node --loader tsx test/integration.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "picgo",
+    "upload",
+    "image-hosting",
+    "libc-architecture",
+    "ai-tp-os",
+    "pipeline",
+    "typescript"
+  ],
+  "author": "picgo-upload-layer",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
