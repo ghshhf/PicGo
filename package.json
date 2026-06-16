@@ -1,7 +1,7 @@
 {
   "name": "picgo-upload-layer",
   "version": "0.1.0",
-  "description": "基于 libc 架构理念重构的 PicGo 上传图层：统一上下文 + 声明式接口 + 6步标准流水线 + 独立图床模块",
+  "description": "基于 libc 架构理念重构的 PicGo 上传图层。统一上下文 UploadCtx + 声明式接口头文件 upload_ctx.h.ts + 6 步标准流水线 + 独立可插拔的图床模块，为图片上传提供一套类型可靠、结构清晰、易于扩展的底层框架。",
   "private": true,
   "type": "module",
   "main": "dist/upload/index.js",
@@ -14,15 +14,36 @@
   },
   "keywords": [
     "picgo",
-    "upload",
+    "image-upload",
     "image-hosting",
+    "image-host",
+    "smms",
+    "github-upload",
+    "typescript",
     "libc-architecture",
     "ai-tp-os",
     "pipeline",
-    "typescript"
+    "modular",
+    "uploader",
+    "markdown-image",
+    "electron"
   ],
-  "author": "picgo-upload-layer",
+  "author": "ghshhf",
+  "contributors": [
+    "picgo-upload-layer"
+  ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ghshhf/PicGo.git"
+  },
+  "homepage": "https://github.com/ghshhf/PicGo",
+  "bugs": {
+    "url": "https://github.com/ghshhf/PicGo/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "tsx": "^4.7.0",
