@@ -464,11 +464,28 @@ node --loader tsx src/upload/cli.ts stats
 # 7) 健康检查（调试用）
 node --loader tsx src/upload/cli.ts health
 
-# 8) 也可以用 npm scripts（更短）
+# 8) 查看上传历史/相册（默认最近 10 条）
+node --loader tsx src/upload/cli.ts history
+#   查看最近 30 条
+node --loader tsx src/upload/cli.ts history 30
+#   查看所有
+node --loader tsx src/upload/cli.ts history all
+#   只看某个图床
+node --loader tsx src/upload/cli.ts history --route github
+#   只看某一天之后
+node --loader tsx src/upload/cli.ts history --since 2026-06-01
+#   组合
+node --loader tsx src/upload/cli.ts history --route qiniu --since 2026-06-01 20
+
+# 9) 删除某条历史（history 输出里的 [id]）
+node --loader tsx src/upload/cli.ts history-delete 20260617-xxxxxx
+
+# 10) 也可以用 npm scripts（更短）
 npm run upload -- /path/to/screenshot.png
 npm run picgo-list
 npm run picgo-stats
 npm run picgo-health
+npm run picgo-history -- 30
 ```
 
 ### 配置文件结构（~/.picgo-upload-layer/config.json）
@@ -778,7 +795,7 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 | 排名 | 缺失项 | 影响 |
 |------|--------|------|
 | **#4** | **第 6~8 个图床**（LskyPro / 又拍云 / Gitee） | 国内还有一批常见图床；Gitee 对轻度使用友好且免费 |
-| **#5** | **相册按路由/时间筛选** | `getHistory` 已返回所有数据，但 CLI 没有加过滤参数。下一步扩展 `history --route qiniu` 之类 |
+| **#5** | ~~相册按路由/时间筛选~~ | ✅ 已完成：CLI `history --route x --since YYYY-MM-DD` |
 | **#6** | **上传前的字节级预检**（不重复上传已知 hash 的图片） | 当前去重只在同一批上传内生效；跨批去重需要持久化 hash → 本地索引 |
 | **#7** | **国际化（i18n）** | CLI 输出当前以中文为主。`upload_error.ts` 已具备中英文基础映射 |
 
@@ -796,8 +813,8 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 
 | 优先级 | 任务 | 预估行数 | 难度 | 为什么值得先做 |
 |--------|------|---------|------|------------|
-| **⭐⭐⭐** | **failover 回调里打印"切换到 X"提示** | ~10 行 | 🟢 低 | 当前 failover 是静默的，用户看不到发生了什么 |
-| **⭐⭐⭐** | **相册的 `--since / --route` 筛选** | ~15 行 | 🟢 低 | `getHistory` 已经返回数组，只需加 2 个 CLI filter |
+| **✅** | ~~failover 回调里打印"切换到 X"提示~~ | ~10 行 | 🟢 低 | 已完成 |
+| **✅** | ~~相册的 `--since / --route` 筛选~~ | ~25 行 | 🟢 低 | 已完成 |
 | **⭐⭐** | **接入 `sharp` 做真实图片压缩** | ~50 行 + 1 npm 包 | 🟡 中 | 这是打破"零运行时依赖"承诺的第一步，但对真实用户体验提升最大 |
 | **⭐⭐** | **第 6~8 个图床模块**（又拍云 / LskyPro / Gitee） | 每个 ~80 行 | 🟡 中 | 已有 5 个图床做模板，按 Copy-Modify 就能出结果 |
 | **⭐** | **i18n 文案整理** | ~20 行映射 | 🟢 低 | 只是"整理"，不涉及算法或 API |
@@ -807,12 +824,11 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 
 ### 4️⃣ 一句话总结
 
-> **目前项目已经走到了「能用」阶段**（有 CLI、有配置文件、有 5 个内置图床、有 failover、有 retry、有相册持久化）。
+> **目前项目已经走到了「能用」阶段**（有 CLI、有配置文件、有 5 个内置图床、有 failover、有 retry、有相册持久化、有 history --route/--since 筛选）。
 >
-> 接下来只需做**三件事**就能达到「专业」：
+> 接下来只需做**两件事**就能达到「专业」：
 > 1. 接入 `sharp` 做真实图片压缩
 > 2. 补一批单元测试（签名算法 / 重试循环 / failover）
-> 3. 把 CLI 的 `history` 命令加 `--route` / `--since` 筛选
 
 
 
@@ -839,8 +855,8 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 **近期（v0.2 / v0.3）**
 
 - [ ] **`transform` step 接入 `sharp`**：对超大图片做真实的压缩和格式转换（PNG→JPEG、尺寸缩放）
-- [ ] **failover 的"正在切换"用户提示**：当前是静默切换，用户看不到发生了什么
-- [ ] **CLI `history` 加 `--route` / `--since` 筛选**：从相册里按图床或时间筛选
+- [x] **failover 的"正在切换"用户提示**：用户能看到"图床 A 失败 → 切到图床 B"的过程
+- [x] **CLI `history` 加 `--route` / `--since` 筛选**：从相册里按图床或时间筛选
 - [ ] **单元测试**（上传重试 / 七牛云签名 / 腾讯云签名 / failover 循环）
 - [ ] **上传前的跨批 hash 去重**：持久化 hash 索引，不同次 CLI 调用也能复用
 

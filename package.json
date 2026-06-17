@@ -19,7 +19,9 @@
     "picgo-list": "node --loader tsx src/upload/cli.ts list",
     "picgo-stats": "node --loader tsx src/upload/cli.ts stats",
     "picgo-health": "node --loader tsx src/upload/cli.ts health",
-    "picgo-init-config": "node --loader tsx src/upload/cli.ts init-config"
+    "picgo-init-config": "node --loader tsx src/upload/cli.ts init-config",
+    "picgo-history": "node --loader tsx src/upload/cli.ts history",
+    "picgo-history-delete": "node --loader tsx src/upload/cli.ts history-delete"
   },
   "keywords": [
     "picgo",

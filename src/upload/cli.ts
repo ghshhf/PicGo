@@ -257,17 +257,68 @@ function cmdInitConfig(): number {
 // 查看历史相册（支持 --limit N 或简写数字）
 function cmdHistory(argv: string[]): number {
   let limit = 10
-  for (const a of argv) {
+  let route: string | null = null
+  let sinceTs: number | null = null
+
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
     if (/^\d+$/.test(a)) {
       limit = parseInt(a, 10)
     } else if (a === 'all' || a === '--all') {
       limit = 0
+    } else if (a === '--route' && i + 1 < argv.length) {
+      route = argv[++i]
+    } else if (a.startsWith('--route=')) {
+      route = a.slice('--route='.length)
+    } else if (a === '--since' && i + 1 < argv.length) {
+      const dateStr = argv[++i]
+      const parsed = parseDateArg(dateStr)
+      if (parsed) sinceTs = parsed
+      else {
+        console.error(`[error] --since 的日期格式不正确: ${dateStr}。期望: YYYY-MM-DD`)
+        return 2
+      }
+    } else if (a.startsWith('--since=')) {
+      const dateStr = a.slice('--since='.length)
+      const parsed = parseDateArg(dateStr)
+      if (parsed) sinceTs = parsed
+      else {
+        console.error(`[error] --since 的日期格式不正确: ${dateStr}。期望: YYYY-MM-DD`)
+        return 2
+      }
     }
   }
-  const records = getHistory(limit > 0 ? limit : undefined)
-  console.log(`=== 上传历史（最近 ${limit > 0 ? limit : '全部'} 条） ===`)
+
+  // 1) 先从本地拿（按路由过滤的小优化：如果指定 route 且已经有 getHistoryByRoute，则调用）
+  let records = route
+    ? getHistoryByRoute(route, limit > 0 ? limit : undefined)
+    : getHistory(limit > 0 ? limit : undefined)
+
+  // 2) apply --since
+  if (sinceTs !== null) {
+    records = records.filter((r) => r.createdAt >= sinceTs)
+  }
+
+  const parts: string[] = []
+  if (route) parts.push(`route=${route}`)
+  if (sinceTs !== null) parts.push(`since=${new Date(sinceTs).toISOString().slice(0, 10)}`)
+  parts.push(`共 ${records.length} 条`)
+
+  console.log(`=== 上传历史 ${parts.length > 1 ? '（' + parts.join(', ') + '）' : '（' + parts[0] + '）'} ===`)
   console.log(formatHistoryTable(records))
   return 0
+}
+
+// 解析 YYYY-MM-DD（返回该日 00:00:00 的毫秒时间戳）
+function parseDateArg(s: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim())
+  if (!m) return null
+  const y = parseInt(m[1], 10)
+  const mo = parseInt(m[2], 10)
+  const d = parseInt(m[3], 10)
+  const dt = new Date(y, mo - 1, d)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt.getTime()
 }
 
 // 删除历史记录（按 id）
