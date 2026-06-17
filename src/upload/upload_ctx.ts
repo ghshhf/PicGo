@@ -229,13 +229,15 @@ async function upload(files: string[]): Promise<UploadErrCode> {
         // configure 失败 → 记录并尝试下一个 route
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
-        if (!next) {
-          finalCode = r3
-          break
+        if (next) {
+          console.log(`[failover] route "${ctx.currentRoute}" configure 失败，切换到 "${next}" (${formatErrorShort(r3)})`)
+          ctx.currentRoute = next
+          continue
         }
-        ctx.currentRoute = next
-        continue
+        finalCode = r3
+        break
       }
+      console.log(`[info] 当前使用图床: ${ctx.currentRoute}`)
 
       // Step 4: UPLOAD（核心上传）
       const step4 = await import('./upload_steps/04_upload')
@@ -243,13 +245,14 @@ async function upload(files: string[]): Promise<UploadErrCode> {
       if (r4 !== UploadErrCode.UPLOAD_OK) {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
-        if (!next) {
-          finalCode = r4
-          break
+        if (next) {
+          console.log(`[failover] route "${ctx.currentRoute}" upload 失败，切换到 "${next}" (${formatErrorShort(r4)})`)
+          ctx.currentRoute = next
+          ctx.results = []
+          continue
         }
-        ctx.currentRoute = next
-        ctx.results = [] // 清除失败 route 的部分结果
-        continue
+        finalCode = r4
+        break
       }
 
       // Step 5: CHECK（校验结果）
@@ -258,13 +261,14 @@ async function upload(files: string[]): Promise<UploadErrCode> {
       if (r5 !== UploadErrCode.UPLOAD_OK) {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
-        if (!next) {
-          finalCode = r5
-          break
+        if (next) {
+          console.log(`[failover] route "${ctx.currentRoute}" URL 校验失败，切换到 "${next}" (${formatErrorShort(r5)})`)
+          ctx.currentRoute = next
+          ctx.results = []
+          continue
         }
-        ctx.currentRoute = next
-        ctx.results = []
-        continue
+        finalCode = r5
+        break
       }
 
       // Step 6: COMMIT（写回+通知）
@@ -273,13 +277,14 @@ async function upload(files: string[]): Promise<UploadErrCode> {
       if (r6 !== UploadErrCode.UPLOAD_OK) {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
-        if (!next) {
-          finalCode = r6
-          break
+        if (next) {
+          console.log(`[failover] route "${ctx.currentRoute}" commit 失败，切换到 "${next}" (${formatErrorShort(r6)})`)
+          ctx.currentRoute = next
+          ctx.results = []
+          continue
         }
-        ctx.currentRoute = next
-        ctx.results = []
-        continue
+        finalCode = r6
+        break
       }
 
       // 全流程成功
