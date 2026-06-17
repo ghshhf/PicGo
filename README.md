@@ -818,7 +818,7 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 | **⭐⭐** | **接入 `sharp` 做真实图片压缩** | ~50 行 + 1 npm 包 | 🟡 中 | 这是打破"零运行时依赖"承诺的第一步，但对真实用户体验提升最大 |
 | **⭐⭐** | **第 6~8 个图床模块**（又拍云 / LskyPro / Gitee） | 每个 ~80 行 | 🟡 中 | 已有 5 个图床做模板，按 Copy-Modify 就能出结果 |
 | **⭐** | **i18n 文案整理** | ~20 行映射 | 🟢 低 | 只是"整理"，不涉及算法或 API |
-| **⭐** | **为 `upload_retry.ts` / `qiniu.ts` / `tencent-cos.ts` 写单元测试** | 每个 ~40 行 | 🟡 中 | 签名算法和重试循环都是"对输入 → 输出能精确断言"的好目标 |
+| **⭐** | **为 `upload_retry.ts` / `qiniu.ts` 写单元测试** | 每个 ~40 行 | 🟡 中 | `test/unit.test.ts` 已存在，`npm run test:unit` 直接运行 |
 
 ---
 
@@ -857,7 +857,7 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 - [ ] **`transform` step 接入 `sharp`**：对超大图片做真实的压缩和格式转换（PNG→JPEG、尺寸缩放）
 - [x] **failover 的"正在切换"用户提示**：用户能看到"图床 A 失败 → 切到图床 B"的过程
 - [x] **CLI `history` 加 `--route` / `--since` 筛选**：从相册里按图床或时间筛选
-- [ ] **单元测试**（上传重试 / 七牛云签名 / 腾讯云签名 / failover 循环）
+- [x] **单元测试**（upload_retry 指数退避 / qiniu 签名格式 / failover 路由选择）：`npm run test:unit`
 - [ ] **上传前的跨批 hash 去重**：持久化 hash 索引，不同次 CLI 调用也能复用
 
 **中期（v1.0）**

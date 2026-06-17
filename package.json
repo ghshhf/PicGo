@@ -14,6 +14,7 @@
     "build": "tsc --project tsconfig.json",
     "dev": "tsc --project tsconfig.json --watch",
     "test": "node --loader tsx test/integration.test.ts",
+    "test:unit": "node --loader tsx test/unit.test.ts",
     "clean": "rm -rf dist",
     "upload": "node --loader tsx src/upload/cli.ts upload",
     "picgo-list": "node --loader tsx src/upload/cli.ts list",
