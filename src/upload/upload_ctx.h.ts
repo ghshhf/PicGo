@@ -40,6 +40,7 @@ export interface UploadFileInfo {
   width?: number                // 图片宽度（可选）
   height?: number               // 图片高度（可选）
   hash?: string                 // 文件内容哈希（用于去重，类似 simple_hash）
+  reuseUrl?: string             // 若 hash 匹配到已有记录，则填入 URL —— 后续步骤跳过上传
 }
 
 // ------------------------------------------------------------------------
@@ -68,7 +69,7 @@ export interface UploadRoute {
   name: string                  // 图床唯一标识（如 'smms', 'github'）
   host: string                  // 目标主机（用于统计/监控）
   protocol: UploadProtocol      // 上传协议类型
-  priority: number              // 优先级（数字越小越优先，类似 ACL priority）
+  priority?: number             // 优先级（数字越小越优先，未设时默认=10）
   enabled: boolean              // 是否启用
   config: Record<string, any>   // 图床私有配置（token / repo / path 等）
 }

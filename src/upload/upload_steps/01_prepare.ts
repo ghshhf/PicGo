@@ -24,6 +24,7 @@ import {
   UploadFileInfo,
 } from '../upload_ctx.h'
 import { emitStepProgress } from '../upload_ctx'
+import { getHashIndex, appendHashIndex, HashIndexRecord } from '../upload_history'
 
 // 文件扩展名 → MIME 映射（极简版，可按需扩展）
 const MIME_MAP: Record<string, string> = {
@@ -80,9 +81,16 @@ export const run: UploadStepFn = async (
     return UploadErrCode.UPLOAD_ERR_IO
   }
 
-  // 去重：按内容哈希（sha256）+ 路径去重
+  // 同批去重：按内容哈希（sha256）+ 路径去重
   const seenHashes = new Set<string>()
   const seenPaths = new Set<string>()
+
+  // 跨批去重：hash-index 是持久化的，记录已成功上传过的 (hash → URL)
+  // 如果 --force，则跳过 hash-index 检查（强制上传）
+  const crossIndex: Map<string, HashIndexRecord> = (ctx.runtime as any).forceUpload
+    ? new Map<string, HashIndexRecord>()
+    : getHashIndex()
+  let crossDedup = 0
 
   const total = filePaths.length
   for (let i = 0; i < total; i++) {
@@ -150,6 +158,17 @@ export const run: UploadStepFn = async (
     }
     if (hash) seenHashes.add(hash)
 
+    // 5b) 跨批去重：若 hash 在 hash-index 中有对应 URL，记录下来
+    // upload 会在 04 步骤直接使用该 URL，跳过真实上传
+    let reuseUrl: string | undefined
+    if (hash) {
+      const existing = crossIndex.get(hash)
+      if (existing) {
+        reuseUrl = existing.imgUrl
+        crossDedup++
+      }
+    }
+
     // 6) 填充 UploadFileInfo
     const info: UploadFileInfo = {
       fileName: path.basename(filePath),
@@ -157,6 +176,7 @@ export const run: UploadStepFn = async (
       fileSize: stat.size,
       mimeType: detectMime(filePath),
       hash,
+      ...(reuseUrl ? { reuseUrl } : {})
     }
     ctx.files.push(info)
 
@@ -182,10 +202,11 @@ export const run: UploadStepFn = async (
 
   const dedup = total - ctx.files.length
   const dedupMsg = dedup > 0 ? ` (去重跳过 ${dedup} 个)` : ''
+  const crossMsg = crossDedup > 0 ? ` (历史复用 ${crossDedup} 个)` : ''
   emitStepProgress(STEP.PREPARE, UploadStepState.SUCCESS, 100, {
     bytesProcessed: totalBytes,
     bytesTotal: totalBytes,
-    errorMsg: dedupMsg || undefined,
+    errorMsg: (dedupMsg + crossMsg).trim() || undefined,
   })
   return UploadErrCode.UPLOAD_OK
 }

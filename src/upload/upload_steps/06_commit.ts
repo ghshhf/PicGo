@@ -18,7 +18,7 @@ import {
   STEP,
 } from '../upload_ctx.h'
 import { emitStepProgress } from '../upload_ctx'
-import { appendHistory } from '../upload_history'
+import { appendHistory, appendHashIndex, HashIndexRecord } from '../upload_history'
 
 export const run: UploadStepFn = async (
   ctx: UploadCtx,
@@ -50,6 +50,29 @@ export const run: UploadStepFn = async (
   } catch (e) {
     // 相册写入失败不能导致整个上传失败（降级方案：仍返回成功，但记录错误信息）
     ctx.runtime.historyError = String(e)
+  }
+
+  // 4) 写入跨批 hash-index：下次相同内容的图片会命中并复用 URL
+  try {
+    const hashRecords: HashIndexRecord[] = []
+    for (const r of ctx.results) {
+      // 只记录非 reused（即实际真实上传产生的 URL）
+      if (r.file?.hash && !r.file.reuseUrl) {
+        hashRecords.push({
+          hash: r.file.hash,
+          imgUrl: r.imgUrl,
+          route: routeName,
+          createdAt: r.uploadedAt || Date.now(),
+        })
+      }
+    }
+    if (hashRecords.length > 0) {
+      appendHashIndex(hashRecords)
+      ctx.runtime.hashIndexCount = hashRecords.length
+    }
+  } catch (e) {
+    // hash-index 写入失败也不影响上传结果
+    ctx.runtime.hashIndexError = String(e)
   }
 
   emitStepProgress(STEP.COMMIT, UploadStepState.SUCCESS, 100)

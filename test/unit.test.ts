@@ -224,51 +224,65 @@ function test(name: string, fn: () => Promise<void> | void): void {
     routes: RouteEntry[],
     triedRoutes: Set<string>
   ): string | null {
-    // 与 upload_ctx.ts 一致：按 priority（降序）→ enabled → 未 tried
+    // 与 upload_ctx.ts 一致：按 priority（升序，小的优先）→ enabled → 未 tried
     return (
       [...routes]
-        .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+        .sort((a, b) => (a.priority ?? DEFAULT_PRIORITY) - (b.priority ?? DEFAULT_PRIORITY))
         .find((r) => r.enabled && !triedRoutes.has(r.name))?.name ?? null
     )
   }
+  const DEFAULT_PRIORITY = 10
 
-  test('T5-1 第一次选择：取 enabled=true 的第一个', () => {
+  test('T5-1 第一次选择：按 priority 升序（小的优先）', () => {
     const routes: RouteEntry[] = [
       { name: 'a', enabled: true, priority: 10 },
       { name: 'b', enabled: true, priority: 5 },
     ]
-    assert.strictEqual(pickNextRoute(routes, new Set()), 'a')
+    // 升序后：[b(5), a(10)] → 第一个启用的是 'b'
+    assert.strictEqual(pickNextRoute(routes, new Set()), 'b')
   })
 
-  test('T5-2 failover：第一个失败后，切到下一个 enabled', () => {
+  test('T5-2 failover：按 priority 升序依次尝试（3→5→10）', () => {
     const routes: RouteEntry[] = [
       { name: 'a', enabled: true, priority: 10 },
       { name: 'b', enabled: true, priority: 5 },
       { name: 'c', enabled: true, priority: 3 },
     ]
     const tried = new Set<string>()
-    tried.add(pickNextRoute(routes, tried)!)
-    assert.strictEqual(pickNextRoute(routes, tried), 'b')
+    // 升序后：[c(3), b(5), a(10)]
+    const first = pickNextRoute(routes, tried)!
+    assert.strictEqual(first, 'c', '先尝试 priority 最小的 c')
+    tried.add(first)
+    assert.strictEqual(pickNextRoute(routes, tried), 'b', '再尝试 priority 中等的 b')
     tried.add('b')
-    assert.strictEqual(pickNextRoute(routes, tried), 'c')
-    tried.add('c')
+    assert.strictEqual(pickNextRoute(routes, tried), 'a', '最后尝试 priority 最大的 a')
+    tried.add('a')
     assert.strictEqual(pickNextRoute(routes, tried), null, '全部尝试过 → 返回 null')
   })
 
-  test('T5-3 跳过 enabled=false 的', () => {
+  test('T5-3 跳过 enabled=false 的（即使 priority 更小）', () => {
     const routes: RouteEntry[] = [
-      { name: 'a', enabled: false, priority: 10 },
+      { name: 'a', enabled: false, priority: 1 },
       { name: 'b', enabled: true, priority: 5 },
     ]
-    assert.strictEqual(pickNextRoute(routes, new Set()), 'b')
+    assert.strictEqual(pickNextRoute(routes, new Set()), 'b', 'a 被禁用，跳过选 b')
   })
 
-  test('T5-4 priority 为空时，默认 0（不影响相对顺序）', () => {
+  test('T5-4 priority 为空时，使用默认值（保持逻辑一致）', () => {
     const routes: RouteEntry[] = [
-      { name: 'a', enabled: true },
-      { name: 'b', enabled: true, priority: 5 },
+      { name: 'a', enabled: true },                 // priority = DEFAULT_PRIORITY = 10
+      { name: 'b', enabled: true, priority: 5 },      // priority = 5
     ]
-    assert.strictEqual(pickNextRoute(routes, new Set()), 'b', 'priority 大的优先')
+    // 5 < 10 → 'b' 优先（数字小的优先）
+    assert.strictEqual(pickNextRoute(routes, new Set()), 'b', 'priority 小的优先 (5 < 10)')
+  })
+
+  test('T5-5 priority 值越小优先级越高（与 upload_ctx.ts 真实逻辑对齐）', () => {
+    const routes: RouteEntry[] = [
+      { name: 'primary', enabled: true, priority: 1 },
+      { name: 'backup',  enabled: true, priority: 99 },
+    ]
+    assert.strictEqual(pickNextRoute(routes, new Set()), 'primary')
   })
 
   // ============================================================

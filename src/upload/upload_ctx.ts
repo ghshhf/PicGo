@@ -46,13 +46,17 @@ function findRouteIndex(routes: UploadRoute[], name: string): number {
 
 // failover：从 routes 中选出「下一个可尝试的 route」
 // 规则：enabled=true、未被尝试过、按 priority 升序（小的优先）
+const DEFAULT_PRIORITY = 10
 function pickNextRoute(
   routes: UploadRoute[],
   triedRoutes: Set<string>
 ): string | null {
   const candidates = routes
     .filter((r) => r.enabled && !triedRoutes.has(r.name))
-    .sort((a, b) => a.priority - b.priority)
+    .sort((a, b) =>
+      (typeof a.priority === 'number' ? a.priority : DEFAULT_PRIORITY) -
+      (typeof b.priority === 'number' ? b.priority : DEFAULT_PRIORITY)
+    )
   return candidates.length > 0 ? candidates[0].name : null
 }
 
@@ -152,9 +156,17 @@ function getRoutes(): UploadRoute[] {
 function registerRoute(route: UploadRoute): UploadErrCode {
   if (!ctx.initialized) return UploadErrCode.UPLOAD_ERR_INIT
   if (findRouteIndex(ctx.routes, route.name) >= 0) return UploadErrCode.UPLOAD_ERR_CONFIG
-  ctx.routes.push({ ...route })
-  ctx.routes.sort((a, b) => a.priority - b.priority)
-  if (!ctx.currentRoute && route.enabled) ctx.currentRoute = route.name
+  // 标准化 priority：未设置 → 默认 10；非数值 → 默认 10
+  const normalized: UploadRoute = {
+    ...route,
+    priority: typeof route.priority === 'number' ? route.priority : DEFAULT_PRIORITY,
+  }
+  ctx.routes.push(normalized)
+  ctx.routes.sort((a, b) =>
+    (typeof a.priority === 'number' ? a.priority : DEFAULT_PRIORITY) -
+    (typeof b.priority === 'number' ? b.priority : DEFAULT_PRIORITY)
+  )
+  if (!ctx.currentRoute && normalized.enabled) ctx.currentRoute = normalized.name
   return UploadErrCode.UPLOAD_OK
 }
 
@@ -230,14 +242,14 @@ async function upload(files: string[]): Promise<UploadErrCode> {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
         if (next) {
-          console.log(`[failover] route "${ctx.currentRoute}" configure 失败，切换到 "${next}" (${formatErrorShort(r3)})`)
+          emitFailover(`route "${ctx.currentRoute}" configure 失败，切换到 "${next}" (${formatErrorShort(r3)})`)
           ctx.currentRoute = next
           continue
         }
         finalCode = r3
         break
       }
-      console.log(`[info] 当前使用图床: ${ctx.currentRoute}`)
+      emitInfo(`当前使用图床: ${ctx.currentRoute}`)
 
       // Step 4: UPLOAD（核心上传）
       const step4 = await import('./upload_steps/04_upload')
@@ -246,7 +258,7 @@ async function upload(files: string[]): Promise<UploadErrCode> {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
         if (next) {
-          console.log(`[failover] route "${ctx.currentRoute}" upload 失败，切换到 "${next}" (${formatErrorShort(r4)})`)
+          emitFailover(`route "${ctx.currentRoute}" upload 失败，切换到 "${next}" (${formatErrorShort(r4)})`)
           ctx.currentRoute = next
           ctx.results = []
           continue
@@ -262,7 +274,7 @@ async function upload(files: string[]): Promise<UploadErrCode> {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
         if (next) {
-          console.log(`[failover] route "${ctx.currentRoute}" URL 校验失败，切换到 "${next}" (${formatErrorShort(r5)})`)
+          emitFailover(`route "${ctx.currentRoute}" URL 校验失败，切换到 "${next}" (${formatErrorShort(r5)})`)
           ctx.currentRoute = next
           ctx.results = []
           continue
@@ -278,7 +290,7 @@ async function upload(files: string[]): Promise<UploadErrCode> {
         triedRoutes.add(ctx.currentRoute || '')
         const next = pickNextRoute(ctx.routes, triedRoutes)
         if (next) {
-          console.log(`[failover] route "${ctx.currentRoute}" commit 失败，切换到 "${next}" (${formatErrorShort(r6)})`)
+          emitFailover(`route "${ctx.currentRoute}" commit 失败，切换到 "${next}" (${formatErrorShort(r6)})`)
           ctx.currentRoute = next
           ctx.results = []
           continue
@@ -366,5 +378,31 @@ export function emitStepProgress(
     bytesTotal: extra.bytesTotal,
     elapsedMs: extra.elapsedMs,
     errorMsg: extra.errorMsg,
+  })
+}
+
+// 辅助：failover 事件通知（不直接写 stdout，走 onProgress 回调）
+function emitFailover(msg: string): void {
+  ctx.onProgress?.({
+    step: 0,
+    stepName: 'FAILOVER',
+    state: 3,
+    progress: 0,
+    bytesProcessed: undefined,
+    bytesTotal: undefined,
+    errorMsg: msg,
+  })
+}
+
+// 辅助：一般信息通知（同样走 onProgress 回调，不直接写 stdout）
+function emitInfo(msg: string): void {
+  ctx.onProgress?.({
+    step: 0,
+    stepName: 'INFO',
+    state: 0,
+    progress: 0,
+    bytesProcessed: undefined,
+    bytesTotal: undefined,
+    errorMsg: msg,
   })
 }

@@ -63,23 +63,35 @@ export const run: UploadStepFn = async (
       const file = files[idx]
 
       try {
-        // 包一层指数退避重试（网络抖动 / 图床偶发 5xx 会自动重试 3 次）
-        const raw = await withRetry(
-          async () => {
-            const r = await mod.upload(file, route.config)
-            if (!r || !r.imgUrl) throw new Error(`module.upload 返回缺少 imgUrl`)
-            return r
-          },
-          { label: `${route.name} -> ${file.fileName}`, maxAttempts: 3 }
-        )
+        // --- 跨批去重 fast-path: hash 命中 → 直接复用历史 URL，跳过上传
+        if (file.reuseUrl) {
+          results[idx] = {
+            file,
+            imgUrl: file.reuseUrl,
+            webUrl: file.reuseUrl,
+            markdownUrl: `![](${file.reuseUrl})`,
+            raw: { reused: true, originalUrl: file.reuseUrl },
+            uploadedAt: Date.now(),
+          }
+        } else {
+          // 正常上传：包一层指数退避重试
+          const raw = await withRetry(
+            async () => {
+              const r = await mod.upload(file, route.config)
+              if (!r || !r.imgUrl) throw new Error(`module.upload 返回缺少 imgUrl`)
+              return r
+            },
+            { label: `${route.name} -> ${file.fileName}`, maxAttempts: 3 }
+          )
 
-        results[idx] = {
-          file,
-          imgUrl: raw.imgUrl,
-          webUrl: raw.webUrl,
-          markdownUrl: `![](${raw.imgUrl})`,
-          raw: raw.raw || raw,
-          uploadedAt: Date.now(),
+          results[idx] = {
+            file,
+            imgUrl: raw.imgUrl,
+            webUrl: raw.webUrl,
+            markdownUrl: `![](${raw.imgUrl})`,
+            raw: raw.raw || raw,
+            uploadedAt: Date.now(),
+          }
         }
       } catch (e) {
         // 单个文件失败：标记为 null，并保存错误到 runtime
