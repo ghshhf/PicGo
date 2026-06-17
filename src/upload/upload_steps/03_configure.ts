@@ -22,12 +22,11 @@ import { emitStepProgress } from '../upload_ctx'
 // 必填字段校验规则（按图床名称区分）
 // 设计灵感：C 中每个模块有自己的 required fields
 const REQUIRED_FIELDS: Record<string, string[]> = {
-  smms:   ['token'],
-  github: ['token', 'repo', 'branch', 'path'],
-  qiniu:  ['accessKey', 'secretKey', 'bucket', 'domain'],
-  tcyun:  ['secretId', 'secretKey', 'bucket', 'region'],
-  aliyun:  ['accessKeyId', 'accessKeySecret', 'bucket', 'region'],
-  upyun:   ['bucket', 'operator', 'password'],
+  smms:        ['token'],
+  github:      ['token', 'repo', 'branch', 'path'],
+  qiniu:       ['accessKey', 'secretKey', 'bucket', 'domain'],
+  'tencent-cos': ['secretId', 'secretKey', 'bucket', 'region'],
+  'aliyun-oss':  ['accessKeyId', 'accessKeySecret', 'bucket', 'region'],
 }
 
 function validateRouteConfig(route: UploadRoute): string | null {

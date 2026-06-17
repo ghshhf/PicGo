@@ -6,11 +6,20 @@
   "type": "module",
   "main": "dist/upload/index.js",
   "types": "dist/upload/index.d.ts",
+  "bin": {
+    "picgo-upload-layer": "bin/picgo-upload-layer.js",
+    "picgo-ul": "bin/picgo-upload-layer.js"
+  },
   "scripts": {
     "build": "tsc --project tsconfig.json",
     "dev": "tsc --project tsconfig.json --watch",
     "test": "node --loader tsx test/integration.test.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "upload": "node --loader tsx src/upload/cli.ts upload",
+    "picgo-list": "node --loader tsx src/upload/cli.ts list",
+    "picgo-stats": "node --loader tsx src/upload/cli.ts stats",
+    "picgo-health": "node --loader tsx src/upload/cli.ts health",
+    "picgo-init-config": "node --loader tsx src/upload/cli.ts init-config"
   },
   "keywords": [
     "picgo",

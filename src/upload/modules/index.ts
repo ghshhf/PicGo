@@ -12,3 +12,6 @@
 export * from './registry'
 export * from './smms'
 export * from './github'
+export * from './qiniu'
+export * from './tencent-cos'
+export * from './aliyun-oss'

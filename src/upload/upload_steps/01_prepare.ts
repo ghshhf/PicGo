@@ -4,14 +4,16 @@
 // 职责（对应 glibc-packages build-cross.sh 的 prepare()）：
 //   1. 校验文件路径是否存在
 //   2. 读取文件大小 / MIME 类型
-//   3. 填充 ctx.files（UploadFileInfo[]）
-//   4. 计算文件哈希（可选，用于去重）
+//   3. 计算 SHA-256 哈希（用于真正的文件内容去重）
+//   4. 去重：同一批上传中相同内容的文件只保留一份
+//   5. 填充 ctx.files（UploadFileInfo[]）
 //
 // 注意：本 step 只做读取，不做任何上传相关网络操作
 // ========================================================================
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { createHash } from 'node:crypto'
 
 import {
   UploadCtx,
@@ -33,6 +35,11 @@ const MIME_MAP: Record<string, string> = {
   '.webp': 'image/webp',
   '.svg':  'image/svg+xml',
   '.ico':  'image/x-icon',
+  '.avif': 'image/avif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.tif':  'image/tiff',
+  '.tiff': 'image/tiff',
 }
 
 function detectMime(file: string): string {
@@ -40,18 +47,24 @@ function detectMime(file: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
-// 简化的内容哈希（对应 C 中的 simple_hash()）
-async function simpleHash(filePath: string): Promise<string> {
+// 真正的 SHA-256 哈希（分块 64KB，避免一次性读大文件）
+function sha256FileSync(filePath: string): string {
+  const hash = createHash('sha256')
+  const CHUNK = 64 * 1024
+  const fd = fs.openSync(filePath, 'r')
   try {
-    const buf = fs.readFileSync(filePath)
-    let h = 0
-    for (let i = 0; i < Math.min(buf.length, 4096); i++) {
-      h = ((h << 5) - h) + buf[i]
-      h |= 0
+    const stat = fs.fstatSync(fd)
+    let remaining = stat.size
+    const buf = Buffer.allocUnsafe(Math.min(CHUNK, remaining))
+    while (remaining > 0) {
+      const toRead = Math.min(CHUNK, remaining)
+      const bytesRead = fs.readSync(fd, buf, 0, toRead, null)
+      hash.update(buf.subarray(0, bytesRead))
+      remaining -= bytesRead
     }
-    return 'h' + Math.abs(h).toString(16) + '_' + buf.length
-  } catch {
-    return ''
+    return hash.digest('hex')
+  } finally {
+    try { fs.closeSync(fd) } catch { /* ignore */ }
   }
 }
 
@@ -67,11 +80,21 @@ export const run: UploadStepFn = async (
     return UploadErrCode.UPLOAD_ERR_IO
   }
 
+  // 去重：按内容哈希（sha256）+ 路径去重
+  const seenHashes = new Set<string>()
+  const seenPaths = new Set<string>()
+
   const total = filePaths.length
   for (let i = 0; i < total; i++) {
     const filePath = filePaths[i]
 
-    // 1) 检查路径是否存在
+    // 1) 检查路径：避免重复路径
+    if (seenPaths.has(filePath)) {
+      continue // 完全相同的路径，跳过
+    }
+    seenPaths.add(filePath)
+
+    // 2) 检查路径是否存在
     if (!fs.existsSync(filePath)) {
       emitStepProgress(STEP.PREPARE, UploadStepState.FAILED, 0, {
         errorMsg: `文件不存在: ${filePath}`,
@@ -79,7 +102,7 @@ export const run: UploadStepFn = async (
       return UploadErrCode.UPLOAD_ERR_NOT_FOUND
     }
 
-    // 2) 读取文件元信息
+    // 3) 读取文件元信息
     let stat: fs.Stats
     try {
       stat = fs.statSync(filePath)
@@ -97,8 +120,8 @@ export const run: UploadStepFn = async (
       return UploadErrCode.UPLOAD_ERR_IO
     }
 
-    // 3) 大小校验（10 MB 上限，可由 configure 覆盖）
-    const MAX_SIZE = 10 * 1024 * 1024
+    // 4) 大小校验（默认 50 MB 上限，单张截图一般 < 5MB，留足余量）
+    const MAX_SIZE = 50 * 1024 * 1024
     if (stat.size > MAX_SIZE) {
       emitStepProgress(STEP.PREPARE, UploadStepState.FAILED, 0, {
         errorMsg: `文件过大: ${filePath} (${Math.round(stat.size / 1024)} KB)`,
@@ -106,10 +129,28 @@ export const run: UploadStepFn = async (
       return UploadErrCode.UPLOAD_ERR_OVERLOAD
     }
 
-    // 4) 计算哈希（异步但轻量）
-    const hash = await simpleHash(filePath)
+    if (stat.size === 0) {
+      emitStepProgress(STEP.PREPARE, UploadStepState.FAILED, 0, {
+        errorMsg: `空文件: ${filePath}`,
+      })
+      return UploadErrCode.UPLOAD_ERR_IO
+    }
 
-    // 5) 填充 UploadFileInfo
+    // 5) 计算 SHA-256（真正的内容哈希）+ 去重
+    let hash: string
+    try {
+      hash = sha256FileSync(filePath)
+    } catch {
+      // 哈希失败降级为空字符串，但不终止整体流程
+      hash = ''
+    }
+    if (hash && seenHashes.has(hash)) {
+      // 同内容文件已存在于本次上传中，跳过，不重复上传
+      continue
+    }
+    if (hash) seenHashes.add(hash)
+
+    // 6) 填充 UploadFileInfo
     const info: UploadFileInfo = {
       fileName: path.basename(filePath),
       filePath,
@@ -119,7 +160,7 @@ export const run: UploadStepFn = async (
     }
     ctx.files.push(info)
 
-    // 6) 进度更新（每完成一个文件 → 按比例）
+    // 7) 进度更新
     const progress = Math.round(((i + 1) / total) * 100)
     emitStepProgress(STEP.PREPARE, UploadStepState.RUNNING, progress, {
       bytesProcessed: stat.size,
@@ -127,13 +168,24 @@ export const run: UploadStepFn = async (
     })
   }
 
+  // 如果去重后所有文件都被跳过，返回错误
+  if (ctx.files.length === 0) {
+    emitStepProgress(STEP.PREPARE, UploadStepState.FAILED, 0, {
+      errorMsg: '去重后无有效文件',
+    })
+    return UploadErrCode.UPLOAD_ERR_IO
+  }
+
   // 统计：累计字节数
   const totalBytes = ctx.files.reduce((sum, f) => sum + f.fileSize, 0)
   ctx.stats.totalBytes += totalBytes
 
+  const dedup = total - ctx.files.length
+  const dedupMsg = dedup > 0 ? ` (去重跳过 ${dedup} 个)` : ''
   emitStepProgress(STEP.PREPARE, UploadStepState.SUCCESS, 100, {
     bytesProcessed: totalBytes,
     bytesTotal: totalBytes,
+    errorMsg: dedupMsg || undefined,
   })
   return UploadErrCode.UPLOAD_OK
 }

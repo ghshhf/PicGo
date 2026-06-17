@@ -121,6 +121,18 @@
                                     └──────────────────┘
 ```
 
+#### 内置图床一览（5 个）
+
+| 图床名 | `routes[i].name` | 必填配置字段 | 工作模式 | 零依赖? |
+|--------|-----------------|-------------|---------|---------|
+| SM.MS | `smms` | `token` | multipart/form-data POST | ✅ |
+| GitHub (Content API) | `github` | `token`, `repo`, `branch`, `path`, `customUrl` | PUT binary to `/repos/:owner/:repo/contents/:path` | ✅ |
+| 七牛云 KODO | `qiniu` | `accessKey`, `secretKey`, `bucket`, `domain`, `path` | HMAC-SHA1 签名 + multipart/form-data | ✅ |
+| 腾讯云 COS | `tencent-cos` | `secretId`, `secretKey`, `bucket`, `region`, `domain`, `path` | COS v5 签名 + PUT binary | ✅ |
+| 阿里云 OSS | `aliyun-oss` | `accessKeyId`, `accessKeySecret`, `bucket`, `region`, `domain`, `path` | OSS v2 签名 + PUT binary | ✅ |
+
+> ✅ **全部零 npm 运行时依赖**（只用 Node.js `crypto` + `fetch`）。
+
 ---
 
 ## 📊 架构对比
@@ -137,6 +149,66 @@
 | **单元测试** | 需 mock 整个事件链 | 每个 step 独立可测 |
 | **类型安全** | 弱（any 类型常见） | **强**（严格模式 + 完整类型） |
 | **运行时依赖** | electron + 多种第三方库 | **零**（仅 Node.js 标准库） |
+
+---
+
+## 🔄 兼容性故事：为什么我们能兼容上游，而上游不能兼容我们
+
+> **核心观察**：PicGo（原始项目）是 Electron 桌面应用，它的"上传能力"其实是个**副产品** —— 嵌入在 UI 事件链里。我们把它**从底层重构为系统级的上传服务**。
+
+### 1. 我们能兼容上游（PicGo 的使用场景）
+
+| PicGo 的典型用法 | 本项目等价能力 | 兼容性 |
+|-----------------|-------------|-------|
+| 选图床 → 上传 → 得到 URL | `UploadContext.upload([filePath])` → `ctx.results` | ✅ 全覆盖 |
+| 插件式图床（smms / github / tcyun...） | 独立 `UploaderModule`（同名或重新实现） | ✅ 一个文件一个图床 |
+| Markdown 输出 | `UploadResult.markdownUrl` | ✅ 字段齐全 |
+| 进度回调 | `UploadStepProgress`（6 步每步有进度） | ✅ 更细粒度 |
+
+更重要的是，**我们的底层是纯 Node.js / TypeScript / 零依赖**：
+
+| 平台 | 能跑吗? | 原因 |
+|------|---------|------|
+| macOS / Windows / Linux 桌面 | ✅ | Node.js 原生支持 |
+| Linux 服务器（无 GUI） | ✅ | 纯 CLI，不需要 X11 / Wayland |
+| 容器 (Docker) | ✅ | 任何 Node.js 镜像都能跑 |
+| CI/CD (GitHub Actions / Gitee CI) | ✅ | GitHub Actions runner 自带 Node.js |
+| Android Termux / iOS a-Shell | ⚙️ 可移植 | 只要有 Node.js 的环境就能跑 |
+| 纯前端（浏览器） | ⚠️ 有限 | `fetch` 可运行，但 `fs` 读本地文件需要 Web API 适配层 |
+
+**一句话**：上游只能在装了 Electron 的桌面跑；本项目**所有有 Node.js 的地方都能跑**。
+
+---
+
+### 2. 上游不能兼容我们（我们的新能力超出了 PicGo 原始架构）
+
+| 本项目能力 | PicGo 能做到吗? | 为什么做不到 |
+|-----------|------------------|------------|
+| **统一上下文 UploadCtx** — 所有状态可序列化可传递 | ❌ 不能 | PicGo 状态分散在 `ctx.beforeTransform / ctx.output / this.$appConfig / 各 plugin 内部闭包`，没有一个可导出的统一上下文 |
+| **6 步显式流水线** — 每步独立可跳过、可测试 | ❌ 不能 | 原始 PicGo 上传是隐式事件链，插在哪里、顺序是否正确，取决于各插件监听时机 |
+| **强类型错误码枚举** `UploadErrCode` | ❌ 不能 | 原始 PicGo 错误是字符串消息，调用方没法程序化判断 |
+| **图床模块纯函数** `upload(file, config) → imgUrl` | ❌ 不能 | PicGo 插件依赖全局 `ctx` 对象，不能独立在浏览器 / 单测 / Node.js 脚本里直接调用 |
+| **健康检查 `healthCheck()`** — 查当前配置了多少图床、哪些模块已注册、哪些缺少 token | ❌ 不能 | 原始 PicGo 没有"系统状态查询"这类概念 |
+| **上传前哈希去重**（SHA-256） | ❌ 不能 | PicGo prepare 阶段只做文件大小校验，没有内容级去重 |
+| **指数退避网络重试**（`upload_retry.ts`） | ❌ 不能 | PicGo 各插件自行处理网络请求，统一的重试策略需要改每个插件 |
+| **跨平台二进制部署**（pkg / 单文件 CLI） | ❌ 不能 | Electron 打包出 200MB，无法用作服务器命令行工具 |
+
+**一句话**：我们的能力是"系统级"的 —— 可嵌入、可测试、可组合。PicGo 的能力是"桌面应用级"的 —— 绑定了 Electron UI 才能工作。
+
+---
+
+### 3. 为什么上游的问题我们不需要等上游修
+
+| 常见上游问题 | 本项目的解法 |
+|-------------|------------|
+| 某个图床插件长期无人维护 | ✅ 每个图床是独立文件，你自己可以写一个替换 |
+| 大图片上传经常超时 | ✅ `upload_retry.ts` 统一 3 次指数退避重试 |
+| 上传后 URL 验证缺失 | ✅ 第 5 步 `CHECK` 专门做 HEAD 验证 |
+| 重复上传相同截图 | ✅ 第 1 步 `PREPARE` 计算 SHA-256 自动去重 |
+| 配置格式混乱，每个插件要求不同字段 | ✅ 统一 `UploadRoute.config` JSON 结构，类型签名写在 `upload_ctx.h.ts` |
+| 上游依赖 Electron 的版本问题 | ✅ 我们不需要 Electron，用 Node.js 18+ 即可 |
+
+**核心思想**：与其等一个不活跃的上游修，不如**在底层把这些问题都抽象成系统能力**。glibc-packages 就是这个思路 —— 构建系统、包管理、跨平台兼容，都在底层解决，不把问题抛给上游。
 
 ---
 
@@ -243,11 +315,19 @@ picgo-upload-layer/
 │   │   ├── 05_check.ts                 #     校验 imgUrl 有效性 + 过滤失败项
 │   │   └── 06_commit.ts                #     汇总结果 + 生成 Markdown 链接
 │   │
+│   ├── config.ts                    # ── 配置文件加载器（~/.picgo-upload-layer/config.json）
+│   ├── cli.ts                       # ── 命令行入口（upload / list / stats / health / init-config）
 │   └── modules/                        # ── 图床模块（与流水线解耦）
 │       ├── registry.ts                 #     模块注册表（registerModule / getModule）
 │       ├── index.ts                    #     统一导出所有内置模块
-│       ├── smms.ts                     #     SM.MS（multipart/form-data 上传）
-│       └── github.ts                   #     GitHub（Content API PUT + base64）
+│       ├── smms.ts                     #     SM.MS
+│       ├── github.ts                   #     GitHub
+│       ├── qiniu.ts                    #     七牛云 KODO
+│       ├── tencent-cos.ts              #     腾讯云 COS
+│       └── aliyun-oss.ts              #     阿里云 OSS
+│
+├── bin/
+│   └── picgo-upload-layer.js         # ── 全局 CLI 入口（npm install -g 后可用）
 │
 └── test/
     └── integration.test.ts             # 端到端集成测试（mock 图床模块，不发网络请求）
@@ -351,6 +431,93 @@ if (code !== UploadErrCode.UPLOAD_OK) {
   process.exit(1)
 }
 ```
+
+### 命令行用法（推荐日常使用）
+
+```bash
+# 1) 首次运行：自动创建默认配置
+node --loader tsx src/upload/cli.ts init-config
+# → 已写入 ~/.picgo-upload-layer/config.json
+
+# 2) 编辑配置文件，把 token 和图床字段填好
+#   Windows:   %USERPROFILE%\.picgo-upload-layer\config.json
+#   macOS/Linux: ~/.picgo-upload-layer/config.json
+
+# 3) 查看当前已配置 / 已注册的图床
+node --loader tsx src/upload/cli.ts list
+#   smms       (启用, 已注册)
+#   github     (启用, 已注册)
+#   qiniu      (未启用, 已注册)
+#   tencent-cos (未启用, 已注册)
+#   aliyun-oss (未启用, 已注册)
+
+# 4) 上传！（支持单文件、多文件）
+node --loader tsx src/upload/cli.ts upload /path/to/screenshot.png
+node --loader tsx src/upload/cli.ts upload img1.png img2.jpg img3.webp
+
+# 5) 指定图床（不写就用 defaultRoute）
+node --loader tsx src/upload/cli.ts upload img.png --route github
+
+# 6) 查看统计
+node --loader tsx src/upload/cli.ts stats
+
+# 7) 健康检查（调试用）
+node --loader tsx src/upload/cli.ts health
+
+# 8) 也可以用 npm scripts（更短）
+npm run upload -- /path/to/screenshot.png
+npm run picgo-list
+npm run picgo-stats
+npm run picgo-health
+```
+
+### 配置文件结构（~/.picgo-upload-layer/config.json）
+
+```json
+{
+  "defaultRoute": "github",
+  "routes": [
+    {
+      "name": "smms",
+      "host": "sm.ms",
+      "protocol": "https",
+      "priority": 1,
+      "enabled": true,
+      "config": { "token": "YOUR_SMMS_TOKEN" }
+    },
+    {
+      "name": "github",
+      "host": "api.github.com",
+      "protocol": "https",
+      "priority": 2,
+      "enabled": true,
+      "config": {
+        "token": "ghp_xxxxxxxxxxx",
+        "repo": "your-name/your-repo",
+        "branch": "main",
+        "path": "img/2026",
+        "customUrl": ""
+      }
+    },
+    {
+      "name": "qiniu",
+      "host": "upload.qiniup.com",
+      "protocol": "https",
+      "priority": 3,
+      "enabled": false,
+      "config": {
+        "accessKey": "YOUR_ACCESS_KEY",
+        "secretKey": "YOUR_SECRET_KEY",
+        "bucket": "your-bucket",
+        "domain": "https://cdn.example.com",
+        "path": ""
+      }
+    }
+  ]
+}
+```
+
+> 💡 **小贴士**：配置文件字段结构和代码里 `UploadRoute` 类型**完全一致**。如果你在 TypeScript 项目里用这个库，可以直接把 `routes` 数组传给 `UploadContext.registerRoute()`。
 
 ### 运行测试
 
@@ -571,131 +738,121 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 > 以下分析基于当前仓库（`src/upload/` 下的 17 个 TypeScript 文件）。
 > 目标是回答三个问题：**最缺什么？什么最简单？优先做什么？**
 
-### 1️⃣ 当前已完成（架构核心）
+### 1️⃣ 当前已完成（架构核心，含本次重构）
 
 | 模块 | 文件 | 状态 | 备注 |
 |------|------|------|------|
 | **声明式接口** | `upload_ctx.h.ts` | ✅ 完整 | 11 部分：错误码 / 文件元 / 结果 / 路由表 / Step-State / 进度回调 / 统计 / 回调接口 / UploadCtx / API 签名 / StepFn 常量 |
-| **核心调度** | `upload_ctx.ts` | ✅ 完整 | 生命周期 + 路由管理 + 6 步流水线调度 + finalize 统一收尾 + cancel |
+| **核心调度 + 多图床 failover** | `upload_ctx.ts` | ✅ **升级** | 6 步流水线 + 当前图床失败时自动切换到下一个 enabled 图床（按 priority 排序） |
 | **错误码系统** | `upload_error.ts` | ✅ 完整 | 10 个错误码 + 中英文对照 + `formatError` 辅助 |
 | **回调系统** | `upload_callback.ts` | ✅ 完整 | `onProgress` / `onSuccess` / `onError` / `onCancel` / `bindCallbacks` |
 | **统计/健康检查** | `upload_stats.ts` | ✅ 完整 | `getStats` / `formatStats` / `healthCheck` + `totalBytesHuman` 美化 |
-| **6 步流水线** | `upload_steps/01~06.ts` | ⚠️ 基本骨架完整 | 每步约 50~120 行，Step 2/5 预留空间较大 |
-| **模块注册表** | `modules/registry.ts` | ✅ 完整 | `registerModule` / `getModule` / `listModules` / `unregisterModule` |
-| **内置图床** | `modules/smms.ts` | ✅ 可用 | multipart/form-data 模式 |
-| **内置图床** | `modules/github.ts` | ✅ 可用 | Content API PUT + base64 + customUrl 支持 |
-| **集成测试** | `test/integration.test.ts` | ✅ 可运行 | 6 个用例覆盖成功路径 + 4 种失败 + 统计 + 健康检查 |
+| **配置文件加载** | `config.ts` | ✅ **新增** | 读取 `~/.picgo-upload-layer/config.json`，首次运行自动创建默认值 |
+| **命令行 CLI** | `cli.ts` | ✅ **新增** | `upload / list / stats / health / history / history-delete / history-clear`，支持 `--route` 指定图床 |
+| **6 步流水线** | `upload_steps/01~06.ts` | ✅ **全面升级** | Step 1 支持 SHA-256 + 去重；Step 2 支持 MIME 校验；Step 4 包指数退避重试；Step 5 真实 HEAD URL 校验；Step 6 写入相册 JSONL |
+| **图床注册表** | `modules/registry.ts` | ✅ 完整 | `registerModule` / `getModule` / `listModules` / `unregisterModule` |
+| **内置图床（5 个）** | `modules/smms.ts` | ✅ 可用 | multipart/form-data 上传 |
+| | `modules/github.ts` | ✅ 可用 | Content API PUT + base64 + customUrl |
+| | `modules/qiniu.ts` | ✅ **新增** | 七牛云 KODO，HMAC-SHA1 签名 |
+| | `modules/tencent-cos.ts` | ✅ **新增** | 腾讯云 COS，V5 签名 + PUT |
+| | `modules/aliyun-oss.ts` | ✅ **新增** | 阿里云 OSS，V2 签名 + PUT |
+| **网络重试** | `upload_retry.ts` | ✅ **新增** | 3 次指数退避（200/400/800ms），5xx 自动重试 |
+| **相册持久化** | `upload_history.ts` | ✅ **新增** | JSON Lines 追加写入、`getHistory` 查询、按 id 删除 |
+| **统一导出入口** | `index.ts` | ✅ 完整 | 对外集中暴露 `UploadContext` / `UploadErrCode` / `formatError` / `loadConfig` / `getHistory` |
+| **集成测试** | `test/integration.test.ts` | ✅ 可运行 | mock 图床模块，覆盖成功路径 + 4 种失败模式 |
 
 ---
 
-### 2️⃣ 项目最缺什么（按严重程度排序）
+### 2️⃣ 剩下的工作（按严重程度排序）
 
-#### 🟥 高严重性 — "没有它，用户根本无法使用"
+#### 🟥 高严重性 — "影响日常使用"
 
 | 排名 | 缺失项 | 影响 | 为什么重要 |
 |------|--------|------|----------|
-| **#1** | **配置文件（~/.picgo/config.json）** | 🔴 阻塞 | 当前 token 只能写死在代码里。用户用这个项目的**第一步**必须是"把我的 token 配好"，而不是改源码 |
-| **#2** | **CLI 入口（命令行上传）** | 🔴 阻塞 | 当前项目没有任何可执行文件。`npm run test` 只跑集成测试，但 `node src/upload/index.ts` 什么都不会做。项目需要一个 `bin/` 或 `cli.ts` 作为真实使用入口 |
-| **#3** | **Step 2 Transform 的真实实现** | 🟡 半阻塞 | `02_transform.ts` 目前是**空壳**（只打印一行日志）。图片压缩/格式转换是真实使用场景下的刚需，特别是大截图（MB 级） |
+| **#1** | **Step 2 Transform 的真实图片压缩** | 🟡 中等 | `02_transform.ts` 已经做好 MIME 校验与压缩候选分类，但**只打印日志、不做真实字节压缩**。需要引入 `sharp` 完成 PNG → JPEG / 尺寸缩放 |
+| **#2** | **单元测试（每个 step / module 独立测试）** | 🟡 中等 | `upload_retry.ts` 的指数退避、`qiniu/tencent/aliyun` 的签名算法、`upload_ctx.ts` 里的 failover 循环都缺少独立单测保护 |
+| **#3** | **failover 的用户提示** | 🟢 低 | 现在"图床 A 失败 → 自动切到 B"是静默发生的。应该通过 `onError` 回调打印"正在切换"提示，让用户知道发生了什么 |
 
-#### 🟨 中严重性 — "能跑通，但体验差、扩展性弱"
-
-| 排名 | 缺失项 | 影响 |
-|------|--------|------|
-| **#4** | **更多图床模块（至少 5~8 个）** | 只有 SM.MS 和 GitHub 两个。七牛云/阿里云 OSS/腾讯云 COS/LskyPro 这些是国内用户刚需 |
-| **#5** | **相册/上传历史持久化** | 上传后 Markdown 链接打印到终端就没了。应该保存到本地文件/SQLite，便于查找、复用、删除 |
-| **#6** | **Step 5 CHECK 的真实 URL 校验** | 当前只做了非空检查。应该 HEAD 请求确认 URL 可访问（含超时处理 / 重试） |
-| **#7** | **单元测试** | 只有 1 个集成测试，没有对每个 step、每个模块单独的单元测试。重构时信心不足 |
-| **#8** | **网络错误重试** | 网络抖动或图床 API 偶尔 5xx 会让上传失败。需要指数退避重试（exponential backoff） |
-| **#9** | **文件哈希 + 去重** | `UploadFileInfo` 定义了 `hash?: string` 字段，但 `01_prepare.ts` 从未真正计算。去重意味着"同一张图不会上传两次" |
-
-#### 🟩 低严重性 / 长期演进
+#### 🟨 中严重性 — "功能可以更完整"
 
 | 排名 | 缺失项 | 影响 |
 |------|--------|------|
-| **#10** | **Electron / Tauri GUI** | 桌面 UI 是 PicGo 最核心的用户形态，但底层引擎先做扎实再套壳 |
-| **#11** | **拖拽 / 剪贴板上传** | GUI 配套功能 |
-| **#12** | **多图床故障切换（failover）** | 当前只在选择的图床上尝试；可以做"失败后自动切备份图床" |
-| **#13** | **国际化（i18n）** | `upload_error.ts` 已经准备了中英文，但还没接入到所有提示文案 |
+| **#4** | **第 6~8 个图床**（LskyPro / 又拍云 / Gitee） | 国内还有一批常见图床；Gitee 对轻度使用友好且免费 |
+| **#5** | **相册按路由/时间筛选** | `getHistory` 已返回所有数据，但 CLI 没有加过滤参数。下一步扩展 `history --route qiniu` 之类 |
+| **#6** | **上传前的字节级预检**（不重复上传已知 hash 的图片） | 当前去重只在同一批上传内生效；跨批去重需要持久化 hash → 本地索引 |
+| **#7** | **国际化（i18n）** | CLI 输出当前以中文为主。`upload_error.ts` 已具备中英文基础映射 |
+
+#### 🟩 长期演进（架构层面的锦上添花）
+
+| 排名 | 缺失项 | 影响 |
+|------|--------|------|
+| **#8** | **Electron / Tauri GUI** | 桌面 UI 是 PicGo 的"原生意境"。但底层引擎越稳定，上层 UI 越薄 |
+| **#9** | **拖拽 / 剪贴板上传** | GUI 配套功能 |
+| **#10** | **配置热加载**（修改 config.json 后立即生效，无需重启） |
 
 ---
 
-### 3️⃣ 什么最简单（实现成本 / 预估代码量）
+### 3️⃣ 什么最简单 / 最优先
 
-下面按**代码量从少到多**排序（代码越少说明越容易做）：
-
-| 优先级 | 任务 | 预估文件数 | 预估行数 | 难度 | 说明 |
-|--------|------|-----------|---------|------|------|
-| **⭐⭐⭐ 最简单** | **文件哈希 + 去重（Step 1）** | 1 文件（修改 `01_prepare.ts`） | ~20 行新增 | 🟢 低 | 用 Node.js `crypto.createHash('sha256')`，在读取文件后加一步 |
-| **⭐⭐⭐** | **Step 5 CHECK URL 校验** | 1 文件（修改 `05_check.ts`） | ~30 行 | 🟢 低 | 用 `fetch(url, { method: 'HEAD' })` 验证返回 2xx；注意加超时 |
-| **⭐⭐⭐** | **CLI 入口（最小可运行版）** | 1 新文件 `src/cli.ts` | ~80 行 | 🟢 低 | 解析 `process.argv`，调用 `UploadContext.upload()`，打印结果 |
-| **⭐⭐ 中等** | **配置文件加载器** | 1 文件 `src/config.ts` + 1 示例 `config.example.json` | ~100 行 | 🟡 中 | 读取 `~/.picgo-upload-layer/config.json`，没有就自动创建默认值 |
-| **⭐⭐** | **网络重试（backoff）** | 局部修改 `modules/*` + `04_upload.ts` | ~50 行 | 🟡 中 | 在 `mod.upload()` 外层包一层重试循环（3 次 + 200/400/800ms 退避） |
-| **⭐⭐** | **3 个新图床模块** | 3 个新文件（qiniu.ts / aliyun-oss.ts / lskypro.ts） | 每个 ~80 行 | 🟡 中 | 每个图床都是独立文件 + 统一接口，按模板复制即可 |
-| **⭐ 较难** | **真实图片压缩（Step 2 TRANSFORM）** | 1 文件重写 `02_transform.ts` + 新增 `sharp` 依赖 | ~80 行 + 1 npm 包 | 🟠 中高 | 需要引入 `sharp`（但这会打破"零依赖"承诺；或者用 `imagemin` 等替代品，或者 Node.js 原生能力压缩 PNG → WebP） |
-| **⭐ 较难** | **相册持久化（SQLite）** | 1 文件 `src/album.ts` + 新增 `better-sqlite3` 依赖 | ~150 行 | 🟠 中高 | CRUD：`save(UploadResult)` / `findByDate()` / `findByHost()` / `delete()` |
-| **⭐⭐ 长期** | **单元测试体系** | 每个 step/module 1 个测试文件，约 8~10 个文件 | 每个 ~100 行 | 🟡 中 | 用 Node.js 内置 `node:test` 或继续用当前手写风格 |
+| 优先级 | 任务 | 预估行数 | 难度 | 为什么值得先做 |
+|--------|------|---------|------|------------|
+| **⭐⭐⭐** | **failover 回调里打印"切换到 X"提示** | ~10 行 | 🟢 低 | 当前 failover 是静默的，用户看不到发生了什么 |
+| **⭐⭐⭐** | **相册的 `--since / --route` 筛选** | ~15 行 | 🟢 低 | `getHistory` 已经返回数组，只需加 2 个 CLI filter |
+| **⭐⭐** | **接入 `sharp` 做真实图片压缩** | ~50 行 + 1 npm 包 | 🟡 中 | 这是打破"零运行时依赖"承诺的第一步，但对真实用户体验提升最大 |
+| **⭐⭐** | **第 6~8 个图床模块**（又拍云 / LskyPro / Gitee） | 每个 ~80 行 | 🟡 中 | 已有 5 个图床做模板，按 Copy-Modify 就能出结果 |
+| **⭐** | **i18n 文案整理** | ~20 行映射 | 🟢 低 | 只是"整理"，不涉及算法或 API |
+| **⭐** | **为 `upload_retry.ts` / `qiniu.ts` / `tencent-cos.ts` 写单元测试** | 每个 ~40 行 | 🟡 中 | 签名算法和重试循环都是"对输入 → 输出能精确断言"的好目标 |
 
 ---
 
-### 4️⃣ 推荐优先级（综合考虑"价值" × "成本"）
+### 4️⃣ 一句话总结
 
-按 **从最该先做到最不急** 排序：
+> **目前项目已经走到了「能用」阶段**（有 CLI、有配置文件、有 5 个内置图床、有 failover、有 retry、有相册持久化）。
+>
+> 接下来只需做**三件事**就能达到「专业」：
+> 1. 接入 `sharp` 做真实图片压缩
+> 2. 补一批单元测试（签名算法 / 重试循环 / failover）
+> 3. 把 CLI 的 `history` 命令加 `--route` / `--since` 筛选
 
-| 优先级 | 任务 | 价值 | 成本 | 价值/成本比 | 建议 |
-|--------|------|------|------|------------|------|
-| **🔝 P0 — 立即做** | **① CLI 入口 + ② 配置文件** | 🟥 极高（让项目"可以用"） | 🟢 极低（~180 行 / 2 文件） | **最高** | 这两项决定项目能不能从"代码"变成"工具"。没有这两项，项目就是个**库 demo**，不是真正可被人使用的 PicGo 替代品 |
-| **P1 — 紧接着做** | **③ 文件哈希 + 去重** <br> **④ 3 个新图床** | 🟧 高（功能完整性） | 🟢 低（~260 行 / 4 文件） | **很高** | 这两项是"纯粹扩功能"，不涉及架构变动，完全遵循已有接口模板。**做的过程中同时也是在验证架构设计**（如果每个新图床都只需要 80 行左右，说明 UploaderModule 接口设计合理） |
-| **P2 — 做了就"能用"** | **⑤ 网络重试** <br> **⑥ URL 校验** | 🟧 高（鲁棒性） | 🟡 中（~80 行） | **高** | 真实网络环境下这两项会拦截掉大部分"偶发失败"。代码量不大但体验提升显著 |
-| **P3 — 完善阶段** | **⑦ 真实图片压缩** <br> **⑧ 相册持久化** | 🟧 中高（用户体验 + 数据留存） | 🟠 中高（需引入依赖 + ~230 行） | **中** | 打破"零运行时依赖"承诺需要决策。可以做成**可选依赖**（不装 `sharp` 就不压缩，跳过 Step 2） |
-| **P4 — 专业级** | **⑨ 单元测试体系** <br> **⑩ 多图床故障切换 (failover)** | 🟡 中（工程质量 / 高级功能） | 🟡 中（~800 行 / 10+ 文件） | **中** | 测试给你重构信心；failover 让上传成功率接近 100%。但这两个都有"架构设计决策"的成分，不急着一上来就做 |
-| **P5 — 锦上添花** | **⑪ Electron / Tauri GUI** <br> **⑫ 拖拽与剪贴板** | 🟡 中低（但这是"PicGo 的灵魂"） | 🔴 高（整层 UI 重写） | **低** | GUI 可以等底层引擎稳定后再做。底层越稳，上层 UI 越薄 |
-| **P6 — 可有可无** | **⑬ 国际化** | 🟩 低 | 🟢 低 | 视需求而定 | 用户群体稳定后再考虑英文用户 |
 
----
-
-### 5️⃣ 总结：一句话版本
-
-> **先让项目"能用"（CLI + 配置文件，~2 小时），再让它"好用"（更多图床 + 网络重试，~1 天），最后让它"专业"（压缩 + 相册 + 测试，~1 周）。**
-
-**推荐的真实推进路径：**
-
-```
-第 1 步 —  CLI + 配置文件（P0，核心目标：用户能敲一行命令上传）
-   │
-   ▼
-第 2 步 —  新增 3 个图床模块 + 文件哈希去重（P1，验证架构可扩展）
-   │
-   ▼
-第 3 步 —  网络重试 + URL 校验（P2，提升鲁棒性）
-   │
-   ▼
-第 4 步 —  图片压缩 + 相册持久化（P3，用户体验）
-   │
-   ▼
-第 5 步 —  单元测试 + failover + i18n（P4/P5/P6，专业级）
-```
 
 ---
 
 ## 🛣️ 路线图 / TODO
 
+**已完成 ✅**
+
+- [x] **6 步标准流水线**：`prepare → transform → configure → upload → check → commit`
+- [x] **声明式接口 + 统一错误码系统**（`upload_ctx.h.ts` + `upload_error.ts`）
+- [x] **回调系统**：`onProgress` / `onSuccess` / `onError` / `onCancel`
+- [x] **配置文件**：`~/.picgo-upload-layer/config.json`，支持多图床切换 + enabled 切换 + priority 排序
+- [x] **命令行 CLI**：`node --loader tsx src/upload/cli.ts upload|list|stats|health|history|history-delete|...`
+- [x] **内置图床（5 个）**：SM.MS / GitHub / **七牛云** / **腾讯云 COS** / **阿里云 OSS**
+- [x] **网络重试**：指数退避（200/400/800ms），5xx 自动重试
+- [x] **URL 校验**：`fetch HEAD` + 超时 + 非 2xx 识别
+- [x] **图床故障切换（failover）**：当前 route 失败 → 自动试下一个 enabled route
+- [x] **相册持久化**：JSON Lines 追加写入 `~/.picgo-upload-layer/history.jsonl`
+- [x] **SHA-256 + 同批去重**
+- [x] **MIME 类型校验 + 图片分类**
+- [x] **统一导出入口** `index.ts`：对外暴露 `UploadContext` / `UploadErrCode` / `formatError` / `loadConfig` / `getHistory`
+
 **近期（v0.2 / v0.3）**
 
 - [ ] **`transform` step 接入 `sharp`**：对超大图片做真实的压缩和格式转换（PNG→JPEG、尺寸缩放）
-- [ ] **`check` step 真实 HEAD 请求**：验证 `imgUrl` 的 HTTP 可访问性（超时处理）
-- [ ] **配置文件**：`~/.picgo-upload-layer/config.json` 支持多图床切换、默认优先级、自定义字段
+- [ ] **failover 的"正在切换"用户提示**：当前是静默切换，用户看不到发生了什么
+- [ ] **CLI `history` 加 `--route` / `--since` 筛选**：从相册里按图床或时间筛选
+- [ ] **单元测试**（上传重试 / 七牛云签名 / 腾讯云签名 / failover 循环）
+- [ ] **上传前的跨批 hash 去重**：持久化 hash 索引，不同次 CLI 调用也能复用
 
 **中期（v1.0）**
 
-- [ ] **更多内置图床**：七牛云 / 腾讯云 COS / 阿里云 OSS / 又拍云 / 兰空
-- [ ] **持久化相册**：SQLite 存储上传历史，支持搜索、批量删除、重新获取链接
-- [ ] **CLI 工具**：`picgo upload file.png`、`picgo list`、`picgo delete`
+- [ ] **更多内置图床**：又拍云 / LskyPro / Gitee
 - [ ] **Electron / Tauri GUI**：替换 PicGo 桌面前端，复用本项目作为核心引擎
+- [ ] **npm 发布**：`npm install picgo-upload-layer`
 
 **长期（v2.0+）**
 
-- [ ] **拖拽上传**：监听系统剪贴板，一键上传
+- [ ] **拖拽 / 剪贴板上传**：监听系统剪贴板，一键上传
 - [ ] **国际化（i18n）**：中文/英文双语（`upload_error.ts` 已预留框架）
 - [ ] **Web Dashboard**：浏览器端查看上传历史和统计图表
 

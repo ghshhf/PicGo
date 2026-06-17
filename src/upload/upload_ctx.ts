@@ -44,6 +44,36 @@ function findRouteIndex(routes: UploadRoute[], name: string): number {
   return -1
 }
 
+// failover：从 routes 中选出「下一个可尝试的 route」
+// 规则：enabled=true、未被尝试过、按 priority 升序（小的优先）
+function pickNextRoute(
+  routes: UploadRoute[],
+  triedRoutes: Set<string>
+): string | null {
+  const candidates = routes
+    .filter((r) => r.enabled && !triedRoutes.has(r.name))
+    .sort((a, b) => a.priority - b.priority)
+  return candidates.length > 0 ? candidates[0].name : null
+}
+
+// 简短错误码描述（给日志用，避免中文乱码或过长输出）
+function formatErrorShort(code: UploadErrCode): string {
+  const names: Record<number, string> = {
+    0: 'UPLOAD_OK',
+    1: 'UPLOAD_ERR_INIT',
+    2: 'UPLOAD_ERR_IO',
+    3: 'UPLOAD_ERR_CONFIG',
+    4: 'UPLOAD_ERR_NOT_FOUND',
+    5: 'UPLOAD_ERR_OVERLOAD',
+    6: 'UPLOAD_ERR_CANCEL',
+    7: 'UPLOAD_ERR_PLUGIN',
+    8: 'UPLOAD_ERR_NETWORK',
+    9: 'UPLOAD_ERR_VALIDATE',
+    99: 'UPLOAD_ERR_UNKNOWN',
+  }
+  return names[code] || `CODE_${code}`
+}
+
 // ========================================================================
 // 全局单例上下文（对应 C 中 static 全局 ctx 变量）
 // ========================================================================
@@ -184,31 +214,85 @@ async function upload(files: string[]): Promise<UploadErrCode> {
       return finalize(r2, startTime)
     }
 
-    // ---------- Step 3: CONFIGURE（选择图床） ----------
-    const step3 = await import('./upload_steps/03_configure')
-    const r3 = await step3.run(ctx)
-    if (r3 !== UploadErrCode.UPLOAD_OK) {
-      return finalize(r3, startTime)
+    // ---------- Step 3-6: 在单个 route 上完成完整上传流程 ----------
+    // 含 failover：当前 route 失败时自动切换下一个 enabled route
+    // 算法：按 priority 排序 → 依次尝试 → 第一个成功的 route 就是最终选择
+    const triedRoutes = new Set<string>()
+    let finalCode: UploadErrCode = UploadErrCode.UPLOAD_OK
+    let succeeded: boolean = false
+
+    while (true) {
+      // Step 3: CONFIGURE（选择当前 route）
+      const step3 = await import('./upload_steps/03_configure')
+      const r3 = await step3.run(ctx)
+      if (r3 !== UploadErrCode.UPLOAD_OK) {
+        // configure 失败 → 记录并尝试下一个 route
+        triedRoutes.add(ctx.currentRoute || '')
+        const next = pickNextRoute(ctx.routes, triedRoutes)
+        if (!next) {
+          finalCode = r3
+          break
+        }
+        ctx.currentRoute = next
+        continue
+      }
+
+      // Step 4: UPLOAD（核心上传）
+      const step4 = await import('./upload_steps/04_upload')
+      const r4 = await step4.run(ctx)
+      if (r4 !== UploadErrCode.UPLOAD_OK) {
+        triedRoutes.add(ctx.currentRoute || '')
+        const next = pickNextRoute(ctx.routes, triedRoutes)
+        if (!next) {
+          finalCode = r4
+          break
+        }
+        ctx.currentRoute = next
+        ctx.results = [] // 清除失败 route 的部分结果
+        continue
+      }
+
+      // Step 5: CHECK（校验结果）
+      const step5 = await import('./upload_steps/05_check')
+      const r5 = await step5.run(ctx)
+      if (r5 !== UploadErrCode.UPLOAD_OK) {
+        triedRoutes.add(ctx.currentRoute || '')
+        const next = pickNextRoute(ctx.routes, triedRoutes)
+        if (!next) {
+          finalCode = r5
+          break
+        }
+        ctx.currentRoute = next
+        ctx.results = []
+        continue
+      }
+
+      // Step 6: COMMIT（写回+通知）
+      const step6 = await import('./upload_steps/06_commit')
+      const r6 = await step6.run(ctx)
+      if (r6 !== UploadErrCode.UPLOAD_OK) {
+        triedRoutes.add(ctx.currentRoute || '')
+        const next = pickNextRoute(ctx.routes, triedRoutes)
+        if (!next) {
+          finalCode = r6
+          break
+        }
+        ctx.currentRoute = next
+        ctx.results = []
+        continue
+      }
+
+      // 全流程成功
+      succeeded = true
+      finalCode = r6
+      break
     }
 
-    // ---------- Step 4: UPLOAD（核心上传） ----------
-    const step4 = await import('./upload_steps/04_upload')
-    const r4 = await step4.run(ctx)
-    if (r4 !== UploadErrCode.UPLOAD_OK) {
-      return finalize(r4, startTime)
+    if (!succeeded) {
+      // 所有 route 都失败了
+      ctx.onError?.(finalCode, `所有 ${triedRoutes.size} 个图床都失败，最后一次错误: ${formatErrorShort(finalCode)}`)
     }
-
-    // ---------- Step 5: CHECK（校验结果） ----------
-    const step5 = await import('./upload_steps/05_check')
-    const r5 = await step5.run(ctx)
-    if (r5 !== UploadErrCode.UPLOAD_OK) {
-      return finalize(r5, startTime)
-    }
-
-    // ---------- Step 6: COMMIT（写回+通知） ----------
-    const step6 = await import('./upload_steps/06_commit')
-    const r6 = await step6.run(ctx)
-    return finalize(r6, startTime)
+    return finalize(finalCode, startTime)
 
   } catch (e) {
     ctx.onError?.(UploadErrCode.UPLOAD_ERR_UNKNOWN, String(e))

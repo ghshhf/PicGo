@@ -1,13 +1,16 @@
 // ========================================================================
-// 05_check.ts  — 上传流水线 Step 5：结果校验
+// 05_check.ts  — 上传流水线 Step 5：校验结果
 //
-// 职责（对应 glibc-packages build-cross.sh 的 check()）：
-//   1. 校验 ctx.results 是否非空
-//   2. 校验每个 result.imgUrl 是否是有效的 URL（http(s) 开头）
-//   3. 可选：对 URL 发起 HEAD 请求确认资源存在
-//   4. 把校验通过的结果过滤到 ctx.results
+// 职责：
+//   1. 对每个上传结果执行 HEAD 请求，确认 URL 可访问
+//   2. 记录校验失败的 URL（不中断整体流程）
+//   3. 如果所有结果都校验失败，整体返回错误
 //
-// 注意：严格校验但保留原始信息（失败的结果放入 ctx.runtime.failedResults）
+// 设计：
+//   - 并发校验，单个请求超时 5s
+//   - 5xx/网络失败 → soft warn（可能是 CDN 预热延迟，不判失败）
+//   - 4xx（404/403/...） → hard warn（真的不可访问）
+//   - 2xx → OK
 // ========================================================================
 
 import {
@@ -19,54 +22,85 @@ import {
 } from '../upload_ctx.h'
 import { emitStepProgress } from '../upload_ctx'
 
-function isValidUrl(u: string): boolean {
+const CHECK_TIMEOUT_MS = 5000
+
+async function checkOneUrl(url: string): Promise<{ ok: boolean; status: number | string; msg?: string }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS)
+
   try {
-    const url = new URL(u)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-  } catch {
-    return false
+    const resp = await fetch(url, {
+      method: 'HEAD',
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (resp.status >= 200 && resp.status < 300) {
+      return { ok: true, status: resp.status }
+    }
+    if (resp.status >= 500) {
+      return { ok: false, status: resp.status, msg: '服务端错误（可能是 CDN 预热）' }
+    }
+    return { ok: false, status: resp.status, msg: 'HTTP 非 2xx' }
+  } catch (e: any) {
+    clearTimeout(timer)
+    if (e?.name === 'AbortError') {
+      return { ok: false, status: 'timeout', msg: `HEAD 请求超时 ${CHECK_TIMEOUT_MS}ms` }
+    }
+    return { ok: false, status: 'error', msg: (e as Error).message }
   }
 }
 
 export const run: UploadStepFn = async (
-  ctx: UploadCtx,
+  ctx: UploadCtx
 ): Promise<UploadErrCode> => {
   emitStepProgress(STEP.CHECK, UploadStepState.RUNNING, 0)
 
-  if (!ctx.results || ctx.results.length === 0) {
-    emitStepProgress(STEP.CHECK, UploadStepState.FAILED, 0, {
-      errorMsg: '上传结果为空',
+  const results = ctx.results || []
+  if (results.length === 0) {
+    emitStepProgress(STEP.CHECK, UploadStepState.SUCCESS, 100, {
+      errorMsg: '没有需要校验的结果',
     })
-    return UploadErrCode.UPLOAD_ERR_VALIDATE
+    return UploadErrCode.UPLOAD_OK
   }
 
-  const valid = []
-  const failed = []
-  const total = ctx.results.length
+  let okCount = 0
+  let warnCount = 0
+  let failCount = 0
 
-  for (let i = 0; i < total; i++) {
-    const r = ctx.results[i]
-    const ok = isValidUrl(r.imgUrl)
-    if (ok) {
-      valid.push(r)
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i]
+    const check = await checkOneUrl(r.imgUrl)
+
+    if (check.ok) {
+      okCount++
+    } else if (typeof check.status === 'number' && check.status >= 500) {
+      warnCount++
+      console.log(`[check] ${r.file.fileName}: ${check.msg} (status=${check.status})，可能是 CDN 预热延迟`)
     } else {
-      failed.push({ file: r.file, imgUrl: r.imgUrl, reason: '无效 URL' })
+      failCount++
+      console.log(`[check] ${r.file.fileName}: ${check.msg} (status=${check.status})`)
     }
-    const progress = Math.round(((i + 1) / total) * 100)
+
+    const progress = Math.round(((i + 1) / results.length) * 100)
     emitStepProgress(STEP.CHECK, UploadStepState.RUNNING, progress)
   }
 
-  // 存一份失败结果供上层调试
-  ctx.runtime.failedResults = failed
+  const total = results.length
+  const summary = `OK=${okCount}/${total}, WARN=${warnCount}, FAIL=${failCount}`
+  console.log(`[check] ${summary}`)
 
-  if (valid.length === 0) {
-    emitStepProgress(STEP.CHECK, UploadStepState.FAILED, 0, {
-      errorMsg: '所有结果 URL 无效',
+  // 策略：只要有至少 1 个 OK，就认为成功（warn/fail 只是警告）
+  // 全部失败才返回错误
+  if (okCount === 0 && failCount > 0) {
+    emitStepProgress(STEP.CHECK, UploadStepState.FAILED, 100, {
+      errorMsg: `全部 ${total} 个 URL 校验失败`,
     })
-    return UploadErrCode.UPLOAD_ERR_VALIDATE
+    return UploadErrCode.UPLOAD_ERR_NETWORK
   }
 
-  ctx.results = valid
-  emitStepProgress(STEP.CHECK, UploadStepState.SUCCESS, 100)
+  emitStepProgress(STEP.CHECK, UploadStepState.SUCCESS, 100, {
+    errorMsg: failCount > 0 || warnCount > 0 ? `${summary}` : undefined,
+  })
   return UploadErrCode.UPLOAD_OK
 }

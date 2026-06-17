@@ -18,13 +18,14 @@ import {
   STEP,
 } from '../upload_ctx.h'
 import { emitStepProgress } from '../upload_ctx'
+import { appendHistory } from '../upload_history'
 
 export const run: UploadStepFn = async (
   ctx: UploadCtx,
 ): Promise<UploadErrCode> => {
   emitStepProgress(STEP.COMMIT, UploadStepState.RUNNING, 0)
 
-  // 1) 确保每个结果都有 markdownUrl（虽然 step 4 已经填过，这里做二次保障）
+  // 1) 确保每个结果都有 markdownUrl（二次保障）
   for (const r of ctx.results) {
     if (!r.markdownUrl) {
       r.markdownUrl = `![](${r.imgUrl})`
@@ -39,7 +40,17 @@ export const run: UploadStepFn = async (
     joinedMarkdown: ctx.results.map((r) => r.markdownUrl).join('\n'),
   }
 
-  // 3) 可选：把结果写入用户本地相册（JSON 文件）— 由上层调用 onSuccess 时处理
+  // 3) 写入用户本地相册（JSON Lines，~/.picgo-upload-layer/history.jsonl）
+  //    这是 PicGo 传统里最经典的"相册"功能的底层实现
+  const routeName = ctx.runtime.configuredRoute?.name || ctx.currentRoute || 'unknown'
+  try {
+    const records = appendHistory(ctx.results, routeName)
+    ctx.runtime.historyIds = records.map((r) => r.id)
+    ctx.runtime.historyCount = records.length
+  } catch (e) {
+    // 相册写入失败不能导致整个上传失败（降级方案：仍返回成功，但记录错误信息）
+    ctx.runtime.historyError = String(e)
+  }
 
   emitStepProgress(STEP.COMMIT, UploadStepState.SUCCESS, 100)
   return UploadErrCode.UPLOAD_OK

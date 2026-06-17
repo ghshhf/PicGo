@@ -57,6 +57,28 @@ export {
 export { getStats, formatStats, resetStats, healthCheck } from './upload_stats'
 export type { StatsReport, RouteHealth } from './upload_stats'
 
+// ---- 相册/历史 ----
+export {
+  appendHistory,
+  getHistory,
+  getHistoryByRoute,
+  deleteHistoryById,
+  clearHistory,
+  formatHistoryTable,
+} from './upload_history'
+export type { HistoryRecord } from './upload_history'
+
+// ---- 配置文件加载 ----
+export {
+  loadConfig,
+  saveConfig,
+  getConfigDir,
+  getConfigPath,
+  getRoutesFromConfig,
+  getDefaultRoute,
+} from './config'
+export type { ConfigFile } from './config'
+
 // ---- 图床模块 ----
 export {
   registerModule, getModule, listModules, unregisterModule, clearModules,

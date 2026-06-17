@@ -23,6 +23,7 @@ import {
 } from '../upload_ctx.h'
 import { emitStepProgress } from '../upload_ctx'
 import { getModule } from '../modules/registry'
+import { withRetry } from '../upload_retry'
 
 export const run: UploadStepFn = async (
   ctx: UploadCtx,
@@ -62,11 +63,15 @@ export const run: UploadStepFn = async (
       const file = files[idx]
 
       try {
-        const raw = await mod.upload(file, route.config)
-
-        if (!raw || !raw.imgUrl) {
-          throw new Error(`module.upload 返回缺少 imgUrl`)
-        }
+        // 包一层指数退避重试（网络抖动 / 图床偶发 5xx 会自动重试 3 次）
+        const raw = await withRetry(
+          async () => {
+            const r = await mod.upload(file, route.config)
+            if (!r || !r.imgUrl) throw new Error(`module.upload 返回缺少 imgUrl`)
+            return r
+          },
+          { label: `${route.name} -> ${file.fileName}`, maxAttempts: 3 }
+        )
 
         results[idx] = {
           file,
