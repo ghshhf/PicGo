@@ -824,11 +824,10 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 
 ### 4️⃣ 一句话总结
 
-> **目前项目已经走到了「能用」阶段**（有 CLI、有配置文件、有 5 个内置图床、有 failover、有 retry、有相册持久化、有 history --route/--since 筛选）。
+> **目前项目已经走到了「能用」阶段**（有 CLI、有配置文件、有 5 个内置图床、有 failover、有 retry、有相册持久化、有 history --route/--since 筛选、有 sharp 压缩可选依赖）。
 >
-> 接下来只需做**两件事**就能达到「专业」：
-> 1. 接入 `sharp` 做真实图片压缩
-> 2. 补一批单元测试（签名算法 / 重试循环 / failover）
+> 接下来只需做**一件事**就能达到「专业」：
+> 1. 跨批 hash 去重（持久化索引，不同次 CLI 调用也能复用已上传图片）
 
 
 
@@ -854,7 +853,7 @@ healthCheck()                    // 初始化状态 + 每个路由/模块状态
 
 **近期（v0.2 / v0.3）**
 
-- [ ] **`transform` step 接入 `sharp`**：对超大图片做真实的压缩和格式转换（PNG→JPEG、尺寸缩放）
+- [x] **`transform` step 接入 `sharp`**：对超大 PNG/BMP/TIFF 做真实压缩 → JPEG（可选依赖，用户显式 `"transform": { "compress": true, "quality": 85, "maxWidth": 2048 }` 才生效）
 - [x] **failover 的"正在切换"用户提示**：用户能看到"图床 A 失败 → 切到图床 B"的过程
 - [x] **CLI `history` 加 `--route` / `--since` 筛选**：从相册里按图床或时间筛选
 - [x] **单元测试**（upload_retry 指数退避 / qiniu 签名格式 / failover 路由选择）：`npm run test:unit`
